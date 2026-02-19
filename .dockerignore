@@ -1,0 +1,11 @@
+baked_go_cache/
+tmp/
+vendor/
+bin/
+.DS_Store
+node_modules/
+*.log
+*.tmp
+*.bak
+*.old
+**/*.md
