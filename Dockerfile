@@ -1,13 +1,17 @@
-## Build stage
-FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
+# Build stage
+FROM golang:1.21-alpine AS builder
 WORKDIR /app
 ENV CGO_ENABLED=0
-ENV GOFLAGS=-mod=mod
-COPY go.mod go.mod
-COPY go.sum go.sum 2>/dev/null || true
-RUN go mod download
-COPY . .
-RUN go build -o backend ./...
+
+# Copy go.mod first (go.sum may not exist)
+COPY go.mod ./
+RUN go mod download || true
+
+# Copy source files
+COPY *.go ./
+
+# Build the binary
+RUN go build -o backend .
 
 ## Runtime stage
 FROM alpine:latest
