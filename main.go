@@ -201,10 +201,11 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
     u := &User{ID: newID(), Username: req.Username, Email: req.Email, PasswordHash: string(hash), CreatedAt: time.Now()}
     users[u.ID] = u
     respondJSON(w, http.StatusCreated, map[string]interface{}{
-        "id":        u.ID,
-        "username":  u.Username,
-        "email":     u.Email,
-        "createdAt": u.CreatedAt,
+        "id":         u.ID,
+        "username":   u.Username,
+        "email":      u.Email,
+        "is_admin":   u.IsAdmin,
+        "created_at": u.CreatedAt,
     })
 }
 
@@ -246,8 +247,8 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 			"id":        found.ID,
 			"username":  found.Username,
 			"email":     found.Email,
-			"isAdmin":   found.IsAdmin,
-			"createdAt": found.CreatedAt,
+			"is_admin":   found.IsAdmin,
+			"created_at": found.CreatedAt,
 		},
 	})
 }
@@ -259,10 +260,11 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
         return
     }
     respondJSON(w, http.StatusOK, map[string]interface{}{
-        "id":        user.ID,
-        "username":  user.Username,
-        "email":     user.Email,
-        "createdAt": user.CreatedAt,
+        "id":         user.ID,
+        "username":   user.Username,
+        "email":      user.Email,
+        "is_admin":   user.IsAdmin,
+        "created_at": user.CreatedAt,
     })
 }
 
@@ -291,10 +293,11 @@ func handleUpdateMe(w http.ResponseWriter, r *http.Request) {
         user.Email = req.Email
     }
     respondJSON(w, http.StatusOK, map[string]interface{}{
-        "id": user.ID,
-        "username": user.Username,
-        "email": user.Email,
-        "createdAt": user.CreatedAt,
+        "id":         user.ID,
+        "username":   user.Username,
+        "email":      user.Email,
+        "is_admin":   user.IsAdmin,
+        "created_at": user.CreatedAt,
     })
 }
 
