@@ -3,15 +3,14 @@ FROM golang:1.21-alpine AS builder
 WORKDIR /app
 ENV CGO_ENABLED=0
 
-# Copy go.mod first (go.sum may not exist)
+# Copy go.mod
 COPY go.mod ./
-RUN go mod download || true
 
 # Copy source files
 COPY *.go ./
 
-# Build the binary
-RUN go build -o backend .
+# Resolve dependencies and build
+RUN go mod tidy && go build -o backend .
 
 ## Runtime stage
 FROM alpine:latest
