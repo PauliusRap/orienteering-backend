@@ -1,7 +1,10 @@
 package main
 
 import (
+    "encoding/json"
     "fmt"
+    "io/ioutil"
+    "os"
     "time"
     "sync/atomic"
 
@@ -29,6 +32,7 @@ type User struct {
     Email        string    `json:"email"`
     PasswordHash string    `json:"-"`
     CreatedAt    time.Time `json:"createdAt"`
+    IsAdmin      bool      `json:"isAdmin"`
 }
 
 // Hunt and related models
@@ -36,6 +40,7 @@ type Hunt struct {
     ID          string  `json:"id"`
     Name        string  `json:"name"`
     Description string  `json:"description"`
+    Difficulty  string  `json:"difficulty"`
     Clues       []Clue  `json:"clues"`
     CreatedAt   time.Time `json:"createdAt"`
 }
@@ -74,6 +79,10 @@ func seedInitialData() {
     if len(users) > 0 {
         return
     }
+    // Seed an admin user if there are no users yet
+    adminPw, _ := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
+    admin := &User{ID: nextID(), Username: "admin", Email: "admin@example.com", PasswordHash: string(adminPw), CreatedAt: time.Now(), IsAdmin: true}
+    users[admin.ID] = admin
     // Seed a demo user and two hunts with clues
     // Password: password
     pwHash, _ := bcrypt.GenerateFromPassword([]byte("password"), bcrypt.DefaultCost)
@@ -100,4 +109,56 @@ func seedInitialData() {
 
 func seedData() {
     seedInitialData()
+}
+
+// Persistence helpers
+type dataStore struct {
+    Users      map[string]*User   `json:"users"`
+    Hunts      map[string]*Hunt   `json:"hunts"`
+    Progresses map[string]*Progress `json:"progresses"`
+    CheckIns   []*CheckIn         `json:"checkIns"`
+    IDCounter  int64              `json:"idCounter"`
+}
+
+func dataFilePath() string {
+    if p := os.Getenv("DATA_FILE"); p != "" {
+        return p
+    }
+    return "./data.json"
+}
+
+func SaveData() error {
+    ds := dataStore{
+        Users:      users,
+        Hunts:      hunts,
+        Progresses: progresses,
+        CheckIns:   checkIns,
+        IDCounter:  idCounter,
+    }
+    b, err := json.MarshalIndent(ds, "", "  ")
+    if err != nil {
+        return err
+    }
+    return ioutil.WriteFile(dataFilePath(), b, 0644)
+}
+
+func LoadData() error {
+    path := dataFilePath()
+    if _, err := os.Stat(path); os.IsNotExist(err) {
+        return nil
+    }
+    b, err := ioutil.ReadFile(path)
+    if err != nil {
+        return err
+    }
+    ds := dataStore{}
+    if err := json.Unmarshal(b, &ds); err != nil {
+        return err
+    }
+    if ds.Users != nil { users = ds.Users }
+    if ds.Hunts != nil { hunts = ds.Hunts }
+    if ds.Progresses != nil { progresses = ds.Progresses }
+    if ds.CheckIns != nil { checkIns = ds.CheckIns }
+    idCounter = ds.IDCounter
+    return nil
 }

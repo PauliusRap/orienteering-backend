@@ -11,6 +11,8 @@ import (
     "math"
     "sort"
     "os"
+    "os/signal"
+    "syscall"
 
     "github.com/go-chi/chi/v5"
     "github.com/go-chi/chi/v5/middleware"
@@ -62,7 +64,11 @@ func corsMiddleware(next http.Handler) http.Handler {
  
 
 func main() {
-    // Seed data (users, hunts, clues)
+    // Load persisted data if any
+    if err := LoadData(); err != nil {
+        log.Printf("failed to load data: %v", err)
+    }
+    // Seed demo/admin data if needed
     seedData()
 
     router := setupRouter()
@@ -71,7 +77,21 @@ func main() {
         port = "8080"
     }
     log.Printf("Starting server on :%s...", port)
-    if err := http.ListenAndServe(":"+port, router); err != nil {
+    srv := &http.Server{Addr: ":" + port, Handler: router}
+    // Graceful shutdown using context signal
+    ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+    defer cancel()
+    go func() {
+        <-ctx.Done()
+        log.Println("shutdown signal received, saving data...")
+        if err := SaveData(); err != nil {
+            log.Printf("failed to save data: %v", err)
+        }
+        if err := srv.Shutdown(context.Background()); err != nil {
+            log.Fatalf("server shutdown failed: %v", err)
+        }
+    }()
+    if err := srv.ListenAndServe(); err != http.ErrServerClosed {
         log.Fatalf("server failed: %v", err)
     }
 }
@@ -128,12 +148,20 @@ func setupRouter() *chi.Mux {
 
         // Protected endpoints
         api.With(authMiddleware).Get("/users/me", handleMe)
+        api.With(authMiddleware).Put("/users/me", handleUpdateMe)
+        api.With(authMiddleware).Post("/users/me/password", handleChangePassword)
+
+        // Admin Hunts CRUD (admin only)
+        api.With(authMiddleware).With(adminOnly).Post("/hunts", handleCreateHunt)
+        api.With(authMiddleware).With(adminOnly).Put("/hunts/{id}", handleUpdateHunt)
+        api.With(authMiddleware).With(adminOnly).Delete("/hunts/{id}", handleDeleteHunt)
 
         api.With(authMiddleware).Post("/hunts/{id}/start", handleStartHunt)
 
         api.With(authMiddleware).Get("/progress", handleListProgress)
         api.With(authMiddleware).Get("/progress/{huntId}", handleProgressDetail)
         api.With(authMiddleware).Post("/progress/{huntId}/checkin", handleCheckIn)
+        api.With(authMiddleware).Delete("/progress/{huntId}", handleAbandonProgress)
 
         api.With(authMiddleware).Get("/leaderboards/{huntId}", handleLeaderboard)
         api.With(authMiddleware).Get("/leaderboards/global", handleGlobalLeaderboard)
@@ -156,6 +184,10 @@ func handleRegister(w http.ResponseWriter, r *http.Request) {
     }
     if req.Username == "" || req.Email == "" || req.Password == "" {
         respondError(w, http.StatusBadRequest, "missing fields")
+        return
+    }
+    if len(req.Password) < 6 {
+        respondError(w, http.StatusBadRequest, "password too short")
         return
     }
     // Check existing user
@@ -225,12 +257,212 @@ func handleMe(w http.ResponseWriter, r *http.Request) {
     })
 }
 
+func handleUpdateMe(w http.ResponseWriter, r *http.Request) {
+    user := currentUser(r)
+    if user == nil {
+        respondError(w, http.StatusUnauthorized, "unauthorized")
+        return
+    }
+    var req struct{
+        Username string `json:"username"`
+        Email string `json:"email"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        respondError(w, http.StatusBadRequest, "invalid body")
+        return
+    }
+    if req.Username != "" {
+        user.Username = req.Username
+    }
+    if req.Email != "" {
+        if !strings.Contains(req.Email, "@") {
+            respondError(w, http.StatusBadRequest, "invalid email")
+            return
+        }
+        user.Email = req.Email
+    }
+    respondJSON(w, http.StatusOK, map[string]interface{}{
+        "id": user.ID,
+        "username": user.Username,
+        "email": user.Email,
+        "createdAt": user.CreatedAt,
+    })
+}
+
+func handleChangePassword(w http.ResponseWriter, r *http.Request) {
+    user := currentUser(r)
+    if user == nil {
+        respondError(w, http.StatusUnauthorized, "unauthorized")
+        return
+    }
+    var req struct {
+        OldPassword string `json:"oldPassword"`
+        NewPassword string `json:"newPassword"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        respondError(w, http.StatusBadRequest, "invalid body")
+        return
+    }
+    if len(req.NewPassword) < 6 {
+        respondError(w, http.StatusBadRequest, "password too short")
+        return
+    }
+    if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.OldPassword)); err != nil {
+        respondError(w, http.StatusUnauthorized, "invalid old password")
+        return
+    }
+    hash, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+    user.PasswordHash = string(hash)
+    respondJSON(w, http.StatusOK, map[string]string{"status": "password updated"})
+}
+
 func handleListHunts(w http.ResponseWriter, r *http.Request) {
-    out := make([]*Hunt, 0, len(hunts))
+    // Support optional search and difficulty filters
+    q := strings.ToLower(r.URL.Query().Get("search"))
+    diff := strings.ToLower(r.URL.Query().Get("difficulty"))
+    out := []*Hunt{}
     for _, h := range hunts {
+        if diff != "" {
+            if strings.ToLower(h.Difficulty) != diff {
+                continue
+            }
+        }
+        if q != "" {
+            name := strings.ToLower(h.Name)
+            desc := strings.ToLower(h.Description)
+            if !strings.Contains(name, q) && !strings.Contains(desc, q) {
+                continue
+            }
+        }
         out = append(out, h)
     }
     respondJSON(w, http.StatusOK, out)
+}
+
+// Admin-only endpoints
+type createHuntReq struct {
+    Name        string `json:"name"`
+    Description string `json:"description"`
+    Difficulty  string `json:"difficulty"`
+    Clues       []struct {
+        Order     int     `json:"order"`
+        Hint      string  `json:"hint"`
+        Latitude  float64 `json:"latitude"`
+        Longitude float64 `json:"longitude"`
+        Radius    float64 `json:"radius"`
+    } `json:"clues"`
+}
+
+type updateHuntReq struct {
+    Name        string `json:"name"`
+    Description string `json:"description"`
+    Difficulty  string `json:"difficulty"`
+    Clues       []struct {
+        Order     int     `json:"order"`
+        Hint      string  `json:"hint"`
+        Latitude  float64 `json:"latitude"`
+        Longitude float64 `json:"longitude"`
+        Radius    float64 `json:"radius"`
+    } `json:"clues"`
+}
+
+func handleCreateHunt(w http.ResponseWriter, r *http.Request) {
+    var req createHuntReq
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        respondError(w, http.StatusBadRequest, "invalid request body")
+        return
+    }
+    if req.Name == "" || req.Description == "" {
+        respondError(w, http.StatusBadRequest, "missing fields")
+        return
+    }
+    d := strings.ToLower(req.Difficulty)
+    if d != "easy" && d != "medium" && d != "hard" {
+        respondError(w, http.StatusBadRequest, "invalid difficulty")
+        return
+    }
+    // Validate clue coordinates
+    for _, cl := range req.Clues {
+        if cl.Latitude < -90 || cl.Latitude > 90 || cl.Longitude < -180 || cl.Longitude > 180 {
+            respondError(w, http.StatusBadRequest, "invalid clue coordinates")
+            return
+        }
+    }
+    h := &Hunt{ID: newID(), Name: req.Name, Description: req.Description, Difficulty: d, CreatedAt: time.Now()}
+    // build clues
+    for _, cl := range req.Clues {
+        c := Clue{ID: nextID(), HuntID: h.ID, Order: cl.Order, Hint: cl.Hint, Latitude: cl.Latitude, Longitude: cl.Longitude, Radius: cl.Radius}
+        h.Clues = append(h.Clues, c)
+    }
+    hunts[h.ID] = h
+    respondJSON(w, http.StatusCreated, h)
+}
+
+func handleUpdateHunt(w http.ResponseWriter, r *http.Request) {
+    id := chi.URLParam(r, "id")
+    h, ok := hunts[id]
+    if !ok {
+        respondError(w, http.StatusNotFound, "hunt not found")
+        return
+    }
+    var req updateHuntReq
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        respondError(w, http.StatusBadRequest, "invalid request body")
+        return
+    }
+    // Validate coordinates if clues provided
+    if len(req.Clues) > 0 {
+        for _, cl := range req.Clues {
+            if cl.Latitude < -90 || cl.Latitude > 90 || cl.Longitude < -180 || cl.Longitude > 180 {
+                respondError(w, http.StatusBadRequest, "invalid clue coordinates")
+                return
+            }
+        }
+    }
+    if req.Name != "" {
+        h.Name = req.Name
+    }
+    if req.Description != "" {
+        h.Description = req.Description
+    }
+    if req.Difficulty != "" {
+        d := strings.ToLower(req.Difficulty)
+        if d == "easy" || d == "medium" || d == "hard" {
+            h.Difficulty = d
+        }
+    }
+    if len(req.Clues) > 0 {
+        newClues := []Clue{}
+        for _, cl := range req.Clues {
+            c := Clue{ID: nextID(), HuntID: h.ID, Order: cl.Order, Hint: cl.Hint, Latitude: cl.Latitude, Longitude: cl.Longitude, Radius: cl.Radius}
+            newClues = append(newClues, c)
+        }
+        h.Clues = newClues
+    }
+    respondJSON(w, http.StatusOK, h)
+}
+
+func handleDeleteHunt(w http.ResponseWriter, r *http.Request) {
+    id := chi.URLParam(r, "id")
+    if _, ok := hunts[id]; !ok {
+        respondError(w, http.StatusNotFound, "hunt not found")
+        return
+    }
+    delete(hunts, id)
+    respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func handleAbandonProgress(w http.ResponseWriter, r *http.Request) {
+    user := currentUser(r)
+    if user == nil { respondError(w, http.StatusUnauthorized, "unauthorized"); return }
+    huntID := chi.URLParam(r, "huntId")
+    key := fmt.Sprintf("%s|%s", user.ID, huntID)
+    if _, ok := progresses[key]; !ok {
+        respondError(w, http.StatusNotFound, "progress not found")
+        return
+    }
+    delete(progresses, key)
+    respondJSON(w, http.StatusNoContent, nil)
 }
 
 func handleGetHunt(w http.ResponseWriter, r *http.Request) {
@@ -442,6 +674,18 @@ func authMiddleware(next http.Handler) http.Handler {
         }
         ctx := context.WithValue(r.Context(), userCtxKey, user)
         next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+
+// adminOnly is middleware that restricts access to admin users only.
+func adminOnly(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        u := currentUser(r)
+        if u == nil || !u.IsAdmin {
+            respondError(w, http.StatusForbidden, "admin access required")
+            return
+        }
+        next.ServeHTTP(w, r)
     })
 }
 
