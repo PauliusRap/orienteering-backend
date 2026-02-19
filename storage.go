@@ -101,7 +101,3 @@ func seedInitialData() {
 func seedData() {
     seedInitialData()
 }
-
-func newID() string {
-    return nextID()
-}
