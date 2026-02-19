@@ -1,30 +1,23 @@
-app = "orienteering-game-api"
-primary_region = "sjc"
+# fly.toml app configuration file generated for orienteering-game on 2026-02-19T18:44:27Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'orienteering-game'
+primary_region = 'fra'
 
 [build]
-  image = "local"
 
-[[services]]
+[http_service]
   internal_port = 8080
-  protocol = "tcp"
-  [[services.ports]]
-    port = 80
-    handlers = ["http"]
-  [[services.ports]]
-    port = 443
-    handlers = ["tls", "http"]
-  [[services.health_check]]
-    path = "/health"
-    interval = 30
-    timeout = 2
-    method = "GET"
-    type = "http"
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
 
-[scale]
-min = 1
-max = 3
-
-[env]
-  JWT_SECRET = "${JWT_SECRET}"
-  PORT = "8080"
-  ALLOWED_ORIGINS = "*"
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 1024
