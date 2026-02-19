@@ -239,8 +239,17 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
         "username": found.Username,
         "exp":      time.Now().Add(24 * time.Hour).Unix(),
     })
-    tokenString, _ := token.SignedString(jwtSecret)
-    respondJSON(w, http.StatusOK, map[string]string{"token": tokenString})
+	tokenString, _ := token.SignedString(jwtSecret)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"token": tokenString,
+		"user": map[string]interface{}{
+			"id":        found.ID,
+			"username":  found.Username,
+			"email":     found.Email,
+			"isAdmin":   found.IsAdmin,
+			"createdAt": found.CreatedAt,
+		},
+	})
 }
 
 func handleMe(w http.ResponseWriter, r *http.Request) {
